@@ -62,12 +62,17 @@ msg = {
     "204": "No Content",
     "400": "Bad Request",
     "401": "Unauthorized",
-    "403": "Forbidden",
-    "404": "Not Found",
+    "403_wrong_owner": "Forbidden: You are not the owner of the recipe",
+    "403_duplicate": "Forbidden: The recipe name has been taken",
+    "404_get_coffee": "Not Found: No coffee with this coffee_id exists",
+    "404_coffee_milk": "Not Found: No coffee with this coffee_id exists "
+                       "and/or no milk with this milk_id exists",
     "405": "Method Not Allowed",
     "406": "Not Acceptable"
 }
 
+# store all users after they login
+users = {"all users": []}
 
 ############################################################################
 
@@ -208,6 +213,11 @@ def index():
 @app.route('/decode', methods=['GET'])
 def decode_jwt():
     payload = verify_jwt(request)
+    """add to the users list"""
+    if len(users["all users"]) < 2:
+        sub = payload["sub"]
+        email = payload["email"]
+        users["all users"].append({"sub": sub, "email": email})
     return payload
 
 
@@ -234,13 +244,14 @@ def login_user():
 ############################################################################
 
 # coffee CRUD [Protected]
-
 @app.route('/coffee', methods=['GET', 'POST'])
 def coffee_get_post():
     payload = verify_jwt(request)
 
     query = client.query(kind=constants.coffee)
+    query.add_filter("owner", "=", payload["sub"])
     results = list(query.fetch())
+
     # create a coffee recipe if the Authorization header contains a valid jwt
     if request.method == 'POST':
         content = request.get_json()
@@ -252,11 +263,12 @@ def coffee_get_post():
             return Response(json.dumps(msg["400"]), status=400,
                             mimetype='application/json')
 
-        # Ensure the name of a coffee recipe is unique
+        # Ensure the name of a coffee recipe is unique within one owner's
+        # recipes
         # duplicate name -> 403 error
         for e in results:
             if e["name"] == content["name"]:
-                return Response(json.dumps(msg["403"]), status=403,
+                return Response(json.dumps(msg["403_duplicate"]), status=403,
                                 mimetype='application/json')
 
         new_coffee.update({"name": content["name"],
@@ -270,15 +282,24 @@ def coffee_get_post():
         # set the self link
         new_coffee.update({"self": request.base_url + '/' + str(new_coffee[
                                                                     "id"])})
-        new_coffee.update({"milk options": []})
+        new_coffee.update({"milk options": {}})
         client.put(new_coffee)
         # return 201
         return Response(json.dumps(new_coffee), status=201,
                         mimetype='application/json')
 
     if request.method == 'GET':
-        # TODO: only show coffee recipes owned by the current JWT
+        # only show coffee recipes owned by the current JWT
         query = client.query(kind=constants.coffee)
+
+        #TODO: change address
+        results = list(query.fetch())
+        for e in results:
+            e["self"] = request.base_url + '/' + str(e["id"])
+            client.put(e)
+
+        # only show what is owned by the owner with the current JWT
+        query.add_filter("owner", "=", payload["sub"])
         q_limit = int(request.args.get('limit', '5'))
         q_offset = int(request.args.get('offset', '0'))
         l_iterator = query.fetch(limit=q_limit, offset=q_offset)
@@ -308,12 +329,30 @@ def get_put_patch_delete_coffee(coffee_id):
     coffee_key = client.key(constants.coffee, int(coffee_id))
     coffee = client.get(key=coffee_key)
 
+    # Verify the coffee exists
+    if coffee is None:
+        return Response(json.dumps(msg["404_get_coffee"]), status=404,
+                        mimetype='application/json')
+
+    # Verify if the coffee is owned by the current JWT
+    if coffee["owner"] != payload["sub"]:
+        return Response(json.dumps(msg["403_wrong_owner"]), status=403,
+                        mimetype='application/json')
+
     # View a coffee recipe
     if request.method == 'GET':
         return Response(json.dumps(coffee), status=200,
                         mimetype='application/json')
+
     # Delete a coffee
     if request.method == 'DELETE':
+        # delete the recipe from all of the milk options
+        for m in coffee["milk options"]:
+            milk_key = client.key(constants.milk, int(m["id"]))
+            milk = client.get(key = milk_key)
+            for c in milk["recipes"]:
+                del milk["recipes"][c]
+            client.put(milk)
         client.delete(coffee_key)
         return Response(status=204)
 
@@ -326,10 +365,11 @@ def get_put_patch_delete_coffee(coffee_id):
         # duplicate name -> 403 error
         query = client.query(kind=constants.coffee)
         results = list(query.fetch())
+
         if 'name' in content:
             for e in results:
                 if e["name"] == content["name"]:
-                    return Response(json.dumps(msg["403"]), status=403,
+                    return Response(json.dumps(msg["403_duplicate"]), status=403,
                                     mimetype='application/json')
 
         # 1. Edit a coffee with PATCH: any subset of attributes
@@ -354,16 +394,66 @@ def get_put_patch_delete_coffee(coffee_id):
                         mimetype='application/json')
 
 
-# TODO: add a milk option to a coffee recipe
 @app.route('/coffee/<coffee_id>/milk/<milk_id>', methods=['PUT', 'DELETE'])
+def coffee_put_delete_milk(coffee_id, milk_id):
+    payload = verify_jwt(request)
+    coffee_key = client.key(constants.coffee, int(coffee_id))
+    coffee = client.get(key=coffee_key)
+    milk_key = client.key(constants.milk, int(milk_id))
+    milk = client.get(key=milk_key)
 
-def get_put_patch_delete_coffee(coffee_id):
+    # Verify if the coffee is owned by the current JWT
+    if coffee["owner"] != payload["sub"]:
+        return Response(json.dumps(msg["403_wrong_owner"]), status=403,
+                        mimetype='application/json')
 
-# TODO: ALL USERS
+    # check if milk and coffee both exist
+    if coffee is None or milk is None:
+        return Response(msg["404_coffee_milk"], status=404,
+                        mimetype='application/json')
+
+    if request.method == 'PUT':
+        # check if the milk option already exists
+        if milk_id in coffee["milk options"]:
+            return Response(msg["403_duplicate"], status=403,
+                            mimetype='application/json')
+
+        # key-value: id -> name
+        coffee["milk options"][milk_id] = milk["name"]
+        client.put(coffee)
+        milk["recipes"][coffee_id] = coffee["name"]
+        client.put(milk)
+
+        return Response(json.dumps(coffee), status=200,
+                        mimetype='application/json')
+
+    # Delete a milk option from a coffee recipe
+    if request.method == 'DELETE':
+        for m in coffee["milk options"]:
+            if m == milk_id:
+                del coffee["milk options"][m]
+                break
+        client.put(coffee)
+
+        # update the recipes for the milk option
+        for c in milk["recipes"]:
+            if c == coffee_id:
+                del milk["recipes"][c]
+                break
+        client.put(milk)
+
+        return Response(json.dumps(coffee), status=200,
+                        mimetype='application/json')
+
+
 # get all users
 @app.route('/users', methods=['GET'])
 def get_users():
-    return 'ALL USERS'
+    """
+    sub
+    email
+    """
+    return Response(json.dumps(users), status=200, mimetype='application/json')
 
 
 if __name__ == '__main__':
