@@ -1,1 +1,2 @@
 coffee = "coffee"
+milk = "milk"

@@ -6,6 +6,7 @@ import milk
 
 app = Flask(__name__)
 app.register_blueprint(coffee.bp)
+app.register_blueprint(milk.bp)
 
 
 @app.route('/')
