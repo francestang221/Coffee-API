@@ -23,7 +23,7 @@ msg = {
 
 # Create a Milk Option
 # View all Milk options
-@bp.route('', methods=['POST', 'GET'])
+@bp.route('', methods=['GET', 'POST'])
 def milk_get_post():
     # get the list of all the milk options
     query = client.query(kind=constants.milk)
@@ -62,10 +62,30 @@ def milk_get_post():
                         mimetype='application/json')
 
     # view all the milk options
+    # Pagination: 5 items per page
     if request.method == 'GET':
-        return Response(json.dumps(results), status=200,
-                        mimetype='application/json')
+        q_limit = int(request.args.get('limit', '5'))
+        q_offset = int(request.args.get('offset', '0'))
+        l_iterator = query.fetch(limit=q_limit, offset=q_offset)
+        pages = l_iterator.pages
+        results = list(next(pages))
 
+        if l_iterator.next_page_token:
+            next_offset = q_offset + q_limit
+            next_url = request.base_url + "?limit=" + str(q_limit) + \
+                       "&offset=" + str(next_offset)
+        else:
+            next_url = None
+        output = {"milk options": results}
+        if next_url:
+            output["next"] = next_url
+
+        output["count"] = len(results)
+        return Response(json.dumps(output), status=200, mimetype='application/json')
+
+    else:  # Method not recognized
+        return Response(json.dumps(msg["405"]), status=405,
+                        mimetype='application/json')
 
 # View a milk option: GET
 # Update a milk option: PATCH
@@ -76,6 +96,7 @@ def milk_get_patch_put_delete(milk_id):
     # Get a milk
     milk_key = client.key(constants.milk, int(milk_id))
     milk = client.get(key=milk_key)
+
     # if the milk option does not exist, return 404
     if milk is None:
         return Response(json.dumps((msg["404"])), status=404,
@@ -89,14 +110,13 @@ def milk_get_patch_put_delete(milk_id):
                             mimetype='application/json')
 
         # if the key exists, return the milk with 200
-        milk["id"] = milk_id
         return Response(json.dumps(milk), status=200,
                         mimetype='application/json')
 
     # Edit a milk option: 1) PATCH 2) PUT
-    elif request.method == 'PATCH' or request.method == 'PUT':
+    if request.method == 'PATCH' or request.method == 'PUT':
         content = request.get_json()
-        attributes = content.keys
+        attributes = content.keys()
         # Ensure the name of a milk is unique across all milk options
         # duplicate name -> 403 error
         query = client.query(kind=constants.milk)
@@ -124,14 +144,13 @@ def milk_get_patch_put_delete(milk_id):
         # return 200 if successful
         for attribute in attributes:
             milk.update({attribute: content[attribute]})
-        milk["id"] = milk.key.id
+        # milk["id"] = milk.key.id
         client.put(milk)
         return Response(json.dumps(milk), status=200,
                         mimetype='application/json')
 
-    # Delete a boat
-    elif request.method == 'DELETE':
+    # Delete a milk
+    if request.method == 'DELETE':
         # if the key exists, delete the milk option -> 204
         client.delete(milk_key)
         return Response(status=204, mimetype='application/json')
-
