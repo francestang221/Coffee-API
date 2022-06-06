@@ -1,36 +1,29 @@
+import os
+import http.client
+
 import constants
 import milk
-
 from google.cloud import datastore
-from flask import Flask, request, jsonify, _request_ctx_stack, Response
 import requests
-
-from functools import wraps
-import json
-
 from six.moves.urllib.request import urlopen
-from flask_cors import cross_origin
 from jose import jwt
-
 import json
 from os import environ as env
-from werkzeug.exceptions import HTTPException
-
-from dotenv import load_dotenv, find_dotenv
-from flask import Flask
-from flask import jsonify
-from flask import redirect
-from flask import render_template
-from flask import session
-from flask import url_for
+from urllib.parse import quote_plus, urlencode
 from authlib.integrations.flask_client import OAuth
-from six.moves.urllib.parse import urlencode
+from dotenv import find_dotenv, load_dotenv
+from flask import Flask, redirect, render_template, session, url_for, \
+    Response, request, jsonify
+
+ENV_FILE = find_dotenv()
+if ENV_FILE:
+    load_dotenv(ENV_FILE)
 
 # reference: Module 7 - Exploration - Authentication in Python
 # url: https://canvas.oregonstate.edu/courses/1870359/pages/exploration-authentication-in-python?module_item_id=22099672
 
 app = Flask(__name__)
-app.secret_key = 'SECRET_KEY'
+app.secret_key = env.get("APP_SECRET_KEY")
 app.register_blueprint(milk.bp)
 
 client = datastore.Client()
@@ -43,18 +36,15 @@ ALGORITHMS = ["RS256"]
 
 oauth = OAuth(app)
 
-auth0 = oauth.register(
-    'auth0',
-    client_id=CLIENT_ID,
-    client_secret=CLIENT_SECRET,
-    api_base_url="https://" + DOMAIN,
-    access_token_url="https://" + DOMAIN + "/oauth/token",
-    authorize_url="https://" + DOMAIN + "/authorize",
+oauth.register(
+    "auth0",
+    client_id=env.get("AUTH0_CLIENT_ID"),
+    client_secret=env.get("AUTH0_CLIENT_SECRET"),
     client_kwargs={
-        'scope': 'openid profile email',
+        "scope": "openid profile email",
     },
+    server_metadata_url=f'https://{env.get("AUTH0_DOMAIN")}/.well-known/openid-configuration',
 )
-
 # HTTP status code: message
 msg = {
     "200": "OK",
@@ -206,9 +196,61 @@ def is_valid_jwt(request):
 
 ############################################################################
 
-@app.route('/')
-def index():
-    return "Please navigate to /coffee to use this API"
+# Reference: https://auth0.com/docs/quickstart/webapp/python#configure-auth0
+# Controllers API
+oauth.register(
+    "auth0",
+    client_id=env.get("AUTH0_CLIENT_ID"),
+    client_secret=env.get("AUTH0_CLIENT_SECRET"),
+    client_kwargs={
+        "scope": "openid profile email",
+    },
+    server_metadata_url=f'https://{env.get("AUTH0_DOMAIN")}/.well-known/openid-configuration',
+)
+
+
+# Controllers API
+@app.route("/")
+def home():
+    return render_template(
+        "home.html",
+        session=session.get("user"),
+        pretty=json.dumps(session.get("user"), indent=4),
+    )
+
+
+@app.route("/callback", methods=["GET", "POST"])
+def callback():
+    token = oauth.auth0.authorize_access_token()
+    session["user"] = token
+    return redirect("/")
+
+
+@app.route("/login")
+def login():
+    return oauth.auth0.authorize_redirect(
+        redirect_uri=url_for("callback", _external=True)
+    )
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(
+        "https://"
+        + env.get("AUTH0_DOMAIN")
+        + "/v2/logout?"
+        + urlencode(
+            {
+                "returnTo": url_for("home", _external=True),
+                "client_id": env.get("AUTH0_CLIENT_ID"),
+            },
+            quote_via=quote_plus,
+        )
+    )
+
+
+#############################################################
 
 
 # Decode the JWT supplied in the Authorization header
@@ -227,7 +269,8 @@ def decode_jwt():
 # Request: JSON body with 2 properties with "username" and "password"
 #       of a user registered with this Auth0 domain
 # Response: JSON with the JWT as the value of the property id_token
-@app.route('/login', methods=['POST'])
+# This was used for POSTMAN test
+@app.route('/login_postman', methods=['POST'])
 def login_user():
     content = request.get_json()
     username = content["username"]
@@ -455,4 +498,4 @@ def get_users():
 
 
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=8080, debug=True)
+    app.run(host='127.0.0.1', port=env.get("PORT", 3000))
