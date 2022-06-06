@@ -61,6 +61,7 @@ msg = {
     "201": "Created",
     "204": "No Content",
     "400": "Bad Request",
+    "400_missing": "Bad Request: At least one required attribute is missing",
     "401": "Unauthorized",
     "403_wrong_owner": "Forbidden: You are not the owner of the recipe",
     "403_duplicate": "Forbidden: The recipe name has been taken",
@@ -68,11 +69,12 @@ msg = {
     "404_coffee_milk": "Not Found: No coffee with this coffee_id exists "
                        "and/or no milk with this milk_id exists",
     "405": "Method Not Allowed",
-    "406": "Not Acceptable"
+    "406": "Not Acceptable: Unsupported MIME type"
 }
 
 # store all users after they login
 users = {"all users": []}
+
 
 ############################################################################
 
@@ -260,7 +262,7 @@ def coffee_get_post():
         attributes = content.keys()
         if 'name' not in attributes or 'description' not in attributes or \
                 'ingredients' not in attributes:
-            return Response(json.dumps(msg["400"]), status=400,
+            return Response(json.dumps(msg["400_missing"]), status=400,
                             mimetype='application/json')
 
         # Ensure the name of a coffee recipe is unique within one owner's
@@ -291,13 +293,6 @@ def coffee_get_post():
     if request.method == 'GET':
         # only show coffee recipes owned by the current JWT
         query = client.query(kind=constants.coffee)
-
-        #TODO: change address
-        results = list(query.fetch())
-        for e in results:
-            e["self"] = request.base_url + '/' + str(e["id"])
-            client.put(e)
-
         # only show what is owned by the owner with the current JWT
         query.add_filter("owner", "=", payload["sub"])
         q_limit = int(request.args.get('limit', '5'))
@@ -348,10 +343,12 @@ def get_put_patch_delete_coffee(coffee_id):
     if request.method == 'DELETE':
         # delete the recipe from all of the milk options
         for m in coffee["milk options"]:
-            milk_key = client.key(constants.milk, int(m["id"]))
-            milk = client.get(key = milk_key)
+            milk_key = client.key(constants.milk, int(m))
+            milk = client.get(key=milk_key)
             for c in milk["recipes"]:
-                del milk["recipes"][c]
+                if c == coffee_id:
+                    del milk["recipes"][c]
+                    break
             client.put(milk)
         client.delete(coffee_key)
         return Response(status=204)
@@ -369,21 +366,22 @@ def get_put_patch_delete_coffee(coffee_id):
         if 'name' in content:
             for e in results:
                 if e["name"] == content["name"]:
-                    return Response(json.dumps(msg["403_duplicate"]), status=403,
+                    return Response(json.dumps(msg["403_duplicate"]),
+                                    status=403,
                                     mimetype='application/json')
 
         # 1. Edit a coffee with PATCH: any subset of attributes
         if request.method == 'PATCH':
             if 'name' not in attributes and 'description' not in attributes \
                     and 'ingredients' not in attributes:
-                return Response(json.dumps(msg["400"]), status=400,
+                return Response(json.dumps(msg["400_missing"]), status=400,
                                 mimetype='application/json')
 
         # 2. Edit a coffee with PUT: must modify all attributes
         if request.method == 'PUT':
             if 'name' not in attributes or 'description' not in attributes \
                     or 'ingredients' not in attributes:
-                return Response(json.dumps(msg["400"]), status=400,
+                return Response(json.dumps(msg["400_missing"]), status=400,
                                 mimetype='application/json')
 
         # return 200 if successful
@@ -402,14 +400,14 @@ def coffee_put_delete_milk(coffee_id, milk_id):
     milk_key = client.key(constants.milk, int(milk_id))
     milk = client.get(key=milk_key)
 
+    # check if milk and coffee both exist
+    if coffee is None or milk is None:
+        return Response(json.dumps(msg["404_coffee_milk"]), status=404,
+                        mimetype='application/json')
+
     # Verify if the coffee is owned by the current JWT
     if coffee["owner"] != payload["sub"]:
         return Response(json.dumps(msg["403_wrong_owner"]), status=403,
-                        mimetype='application/json')
-
-    # check if milk and coffee both exist
-    if coffee is None or milk is None:
-        return Response(msg["404_coffee_milk"], status=404,
                         mimetype='application/json')
 
     if request.method == 'PUT':
@@ -449,10 +447,10 @@ def coffee_put_delete_milk(coffee_id, milk_id):
 # get all users
 @app.route('/users', methods=['GET'])
 def get_users():
-    """
-    sub
-    email
-    """
+    # check Accept -> 406 error
+    if 'application/json' != request.headers['Accept']:
+        return Response(json.dumps(msg["406"]), status=406,
+                        mimetype='application/json')
     return Response(json.dumps(users), status=200, mimetype='application/json')
 
 

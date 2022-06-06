@@ -128,7 +128,8 @@ def milk_get_patch_put_delete(milk_id):
         if 'name' in content:
             for e in results:
                 if e["name"] == content["name"]:
-                    return Response(json.dumps(msg["403_duplicate"]), status=403,
+                    return Response(json.dumps(msg["403_duplicate"]),
+                                    status=403,
                                     mimetype='application/json')
 
         # 1. Edit a milk with PATCH: any subset of attributes
@@ -155,6 +156,15 @@ def milk_get_patch_put_delete(milk_id):
 
     # Delete a milk
     if request.method == 'DELETE':
+        # delete the milk option from all the coffee recipes that use it
+        for c in milk["recipes"]:
+            coffee_key = client.key(constants.coffee, int(c))
+            coffee = client.get(key=coffee_key)
+            for m in coffee["milk options"]:
+                if m == milk_id:
+                    del coffee["milk options"][m]
+                    break
+            client.put(coffee)
         # if the key exists, delete the milk option -> 204
         client.delete(milk_key)
         return Response(status=204, mimetype='application/json')
